@@ -12,8 +12,8 @@ from random import random as randZ
 from google.appengine.ext import db
 import logging
 import json
-import python.gameModel as gm
-
+# import python.gameModel as gm
+from python.gameModel import DatastoreInteraction
 
 class HAL(db.Model):
 	'''
@@ -37,11 +37,9 @@ class HAL(db.Model):
 	#list for the actual card values we know
 	opCards = db.StringProperty(str)
 	aiCards = db.StringProperty(str)
-	discardTopValue = db.StringProperty(default="0")
+	discardTopValue = db.IntegerProperty(default=0)
 	#Memory decay rate, abs and rounded between 0.01-.99
 	decayRate = db.FloatProperty(default=0.0)
-	#decayMemory list, represents chance of remembering correctly
-	decayMemory = db.ListProperty(float)
 	#This will be a string that builds up to tell the view what to do
 	actionsToTake = ""
 	diff =0
@@ -56,57 +54,217 @@ class HAL(db.Model):
 		'''
 		self.discardTopValue = topCard
 
+	def setupAIObject(self, sessionId):
+		'''
+			setupAIObject
+			This is used to retrieve all of the information from the datstore about the AI object and set the class variables
+			equal to the values of the entitites retrieved in this way. This should be called whenever a new instance of 
+			HAL is created. 
+			Parameters:
+				sessionId, the sessionId which identifies the HAL entity we are working with. 
+		'''
+		logging.info("got to the setupAIObject function")
+		newModel = DatastoreInteraction(sessionId)
+		valueDict = newModel.getHAL()
+
+		# logging.info("this is the value dict sessionId")
+		# logging.info(valueDict['pkSessionID'])
+
+		self.pkSessionID = valueDict['pkSessionID']
+		self.estAIScore = valueDict['estAIScore']
+		self.estOppScore = valueDict['estOppScore']
+		self.opCardsMem = valueDict['opCardsMem']
+		self.aiCardsMem = valueDict['aiCardsMem']
+		self.opCards = json.dumps(valueDict['opCards'])
+		self.aiCards = json.dumps(valueDict['aiCards'])
+		self.discardTopValue = valueDict['discardTopValue']
+		self.decayRate = valueDict['decayRate']
+
+		logging.info("made it here !!!!!!")
+
+
 	def doTurn(self,state):
 		'''
 		Does the HAL's turn, this function is essentially a way for the AI to keep
 
 		'''
+		logging.info("made it to Hal's DO TURN!")
+		#clear old actions
+		self.actionsToTake = ""
 		#Decide whether or not to draw from the discard pile or the deck
 		#If the card on the discard pile is lower than the largest number we think we have
 		#take it, else draw from the deck
-		discardPile = state['discardPile'][-1]
+		discardPile = state['discard'][-1]
 		maxVal = 0
 		i,j=0,0
 		human,aiCards = self.getMemory()
+		logging.info("in do turn...")
 		for c in aiCards:
-			if(maxVal < int(c['image'])):
+			logging.info(c)
+			if(maxVal < c):
 				i=j
-				maxVal = int(c['image'])
+				maxVal = c
 			j=j+1
 		#Now we know what the maxVal is
 		card = 0
 		if(maxVal > discardPile):
 			#Pull from the discard pile
-			card = state['discardPile'].pop()
+			card = state['discard'].pop()
+			self.actionsToTake = self.actionsToTake + " HAL pulling from Discard"
 		else:
 			#Pull from the deck
-			card = state['deck'].pop()
+			card = -1
+			try:
+				card = state['deck'].pop()
+			except Exception, e:
+				#well fuck. no more cards?!
+				state['state'] = 'endgame'
+				return state
+			else:
+				pass
+			
+			self.actionsToTake = self.actionsToTake + " HAL pulling from Deck"
 		#We now have a card, is it a regular card or a power card?
+		self.actionsToTake = self.actionsToTake + " HAL pulled a " + str(card)
 		if(card < 10):
 			#Regular Card
-			pass
+			#Choose whichever card is highest in our hand, if card is lower then take it
+			#else discard
+			indexOfHighest,highVal = self.findHighestInHand()
+			if(card < highVal):
+				#Yes we do!
+				#give us the card and we remember it well becuase we just got it
+				state['discard'].append(self.aiCards['image'])
+				self.aiCards[indexOfHighest] = {'image' : highVal, 'active' : 0, 'visible' : 0}
+				self.aiCardsMem[indexOfHighest] = 1.0
+				self.actionsToTake = self.actionsToTake + " HAL kept the card!"
+			else:
+				#NO!
+				self.actionsToTake = self.actionsToTake + " HAL discarded the card."
+				state['discard'].append(card)
 		else:
 			#Power Card. Really wish we had  a switch... (python)
 			if(card==10):
+				self.actionsToTake = self.actionsToTake + " HAL has a draw two card. "
+				logging.info("ACTIONS")
+				logging.info(self.actionsToTake)
 				return self.drawTwo(state)
 			elif(card==11):
+				self.actionsToTake = self.actionsToTake + " HAL is peeking at his cards."
+				logging.info("ACTIONS")
+				logging.info(self.actionsToTake)
 				return self.peek(state)
 			elif(card==12):
+				self.actionsToTake = self.actionsToTake + " HAL is going into a swap state"
+				logging.info("ACTIONS")
+				logging.info(self.actionsToTake)
 				return self.swap(state)
 			else:
 				#Back of a card, aka we drew from an empty deck maybe?
-				pass
+				#need to add in error checking
+				state['discard'].append(card)
+		
+		#Should we knock??
+		#We should knock if we think our cards are higher than the players by some threshold
+		self.shouldKnock()
+
+		logging.info("ACTIONS")
+		logging.info(self.actionsToTake)
+
+		#Slowly forget what our cards are\
+		self.alzheimer()
+		return state
 
 
 
 	def drawTwo(self,state):
 		'''
 			drawTwo:
-				The AI decides what to do with a draw two car 
+				The AI decides what to do with a draw two card
 			Parameters:
 				state, the state of the game
 
 		'''
+		#The AI draws a card and decides if it will keep it, 
+		#To decide if it keeps it or not really depends on the value of the card
+		#if the value of the card is greater than any it thinks it has in it's hand it will
+		#keep it. If it finds a power card it will use it 
+
+		#We draw our first card (from the deck because by the logic in do turn we already disregarded the discard)
+		try:
+			card = state['deck'].pop()
+		except Exception, e:
+			#well crap. We're out of cards
+			#we disregarded the discard already so we'll just knock and be done with it.
+			state['knockState'] = True;
+			return state
+		else:
+			#We have a card!
+			#Is it any good?
+			if(card < 10):
+				#It's a number! 
+				#Do we want it?
+				indexOfHighest,highVal = self.findHighestInHand()
+				if(card < highVal):
+					#Yes we do!
+					#give us the card and we remember it well becuase we just got it
+					state['discard'].append(self.aiCards['image'])
+					self.aiCards[indexOfHighest] = {'image' : highVal, 'active' : 0, 'visible' : 0}
+					self.aiCardsMem[indexOfHighest] = 1.0
+				else:
+					#Meh we could do without it
+					state['discard'].append(card)
+					#Lets draw a new card (yo dawg I heard you like try catches...)
+					try:
+						card = state['deck'].pop()
+					except Exception, e:
+						#well how damn there wasn't anything left to grab!
+						state['knockState'] = True
+						return state
+					else:
+						#well goody gumdrops lets get going!
+						if(card < 10):
+							#well doesnt this seem awfully familiar...
+							indexOfHighest,highVal = self.findHighestInHand()
+							if(card < highVal):
+								#We want it!
+								state['discard'].append(self.aiCards['image'])
+								self.aiCards[indexOfHighest] = {'image' : highVal, 'active' : 0, 'visible' : 0}
+								self.aiCardsMem[indexOfHighest] = 1.0
+							else:
+								#We dont want it!
+								state['discard'].append(card)
+
+						else:
+							#It's a power card! Let's use it!
+							if(card==10):
+								return self.drawTwo(state)
+							elif(card==11):
+								return self.peek(state)
+							elif(card==12):
+								return self.swap(state)
+							else:
+								#back of a card or something strange? 
+								#push whatever it was onto the discard pile
+								state['discard'].append(card)
+								pass			
+
+
+			else:
+				#It's a power card! Let's use it!
+				if(card==10):
+					return self.drawTwo(state)
+				elif(card==11):
+					return self.peek(state)
+				elif(card==12):
+					return self.swap(state)
+				else:
+					#back of a card or something strange? 
+					#push whatever it was onto the discard pile
+					state['discard'].append(card)
+					pass
+
+
 
 		return state
 
@@ -126,7 +284,8 @@ class HAL(db.Model):
 				val = self.aiCardsMem[j]
 				i = j
 		#reset the memory (this is effectively the same as us looking at it)
-		self.aiCardsMem[i] = 1
+		self.aiCardsMem[i] = 1.0
+		self.actionsToTake = self.actionsToTake + " HAL remembers his " + i + "th card!"
 
 		return state
 
@@ -232,23 +391,109 @@ class HAL(db.Model):
 				This function uses the probability of rememberance of the AI
 				to determine the representations
 		'''
+		logging.info("made it to HAL's get Memory!!")
 		humanRep = [0,0,0,0]
 		compRep  = [9,9,9,9]
+
+		# logging.info("This is the type of the ai cards:")
+		# logging.info(type( json.dumps(self.aiCards) ) )
+		# logging.info(self.aiCards)
+
+		aiCards = json.loads(self.aiCards)
+		humanCards = json.loads(self.opCards)
 		for i in range(len(self.opCardsMem)):
 			if(self.opCardsMem[i] < randZ()):
 				#Remember correctly
-				humanRep[i] = self.opCards[i]
+				humanRep[i] = humanCards[i]
 			else:
 				#Remembered incorrectly
 				humanRep[i] = {'image' : str(randint(0,9)), 'active' : 0, 'visible' : 0}
-			if(self.aiCardsMem[i] < randz()):
+			if(self.aiCardsMem[i] < randZ()):
 				#Remembered correctly
-				compRep[i] = self.aiCards[i]
+				compRep[i] = aiCards[i]
 			else:
 				#Remembered incorrectly
 				compRep[i] = {'image' : str(randint(0,9)), 'active' : 0, 'visible' : 0}
 		#Return two things at once #YOLO
 		return humanRep,compRep
+
+	def findHighestInHand(self):
+		'''
+			findHighestInHand
+				Finds the highest card in the hand and returns it's index and value
+		'''
+		#The running max val
+		maxVal = 0
+		i,j=0,0
+		human,aiCards = self.getMemory()
+		# logging.info("findHighestInHand, here are the values for the images:")
+		for c in aiCards:
+			# logging.info(c)
+			if(maxVal < c):
+				i=j
+				maxVal = c
+			j=j+1
+
+		return i,maxVal
+
+	def shouldKnock(self):
+		'''
+			shouldKnock
+				Returns true or false if we should try to end the game or not
+		'''
+		#Get what we remember
+		humanCards,aiCards = self.getMemory()
+		#Add up the values
+		#LAWL human value is nothing! so true!
+		humanValue = 0
+		compValue = 0
+		for c in humanCards:
+			humanValue = humanValue + c
+		for c in aiCards:
+			compValue = compValue + c
+		#Now here comes some math
+		#Quite frankly, if we just do a comparison that's silly. We'll end the game if the ai
+		#by chance believes itself to be in the right when it's really just remembering poorly
+		#while this isn't a terrible thing, we still have a pretty good chance that the AI will
+		#try to end the game really early (I don't feel like calculating the probabilty, but we 
+		# could if we got bored and wanted it on the presentation)
+		#The higher the difficulty the more we want to weight it in the AI's favor.
+		#So lets do some ratio work shall we?
+		if(humanValue/compValue < 1):
+			#compValue is larger than the human value but to what degree?
+			#If they are close we will be closer to 1, the more towards zero the more confident 
+			#the computer is
+			if(humanValue/compValue < .75):
+				#pretty unsure, what difficult are we on?
+				if(self.diff > 1):
+					#we're on hard... which means we've got alright memory
+					#flip a coin.
+					if(  randZ() > humanValue/compValue):
+						#Let's knock!
+						state['knockState'] = True
+				else:
+					#We're not on hard, let's do it with some very small probability
+					if(randZ() < .15):
+						state['knockState'] = True
+			elif(humanValue/compValue < .4)	:
+				#pretty confident
+				if(self.diff > 0):
+					#if we're not on easy we'll flip a coid
+					if( randZ() > humanValue/compValue):
+						#60% chance of knocking
+						state['knockState'] = True
+			else:
+				#we're above 75 we aint knocking.
+				pass
+		else:
+			#The human's cards are more than ours, so we wont knock
+			pass
+
+					
+
+
+	
+
 
 
 

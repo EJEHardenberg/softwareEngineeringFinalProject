@@ -1,7 +1,7 @@
 /*
  * Created 14MAR2013 
  * Authors:
- * 	Ethan
+ * 	Ethan, Phelan
  *
  * The purpose of this file is to provide the changes to the view upon each change of state. The following functions
  * are defined here:
@@ -40,7 +40,7 @@ function initialState(state){
 	setTimeout(function(){
 		$('#playerCard1').css("background-image", 'url(images/cards/smallCards/13.png)');
 		$('#playerCard4').css("background-image", 'url(images/cards/smallCards/13.png)');
-	},5000);
+	},6000);
 
 	//No real need for an ajax call we'll just update things here
 	state.state = 'waitingForDraw';
@@ -228,10 +228,38 @@ function HAL(state){
 	//getting.
 	console.log('HAL Says');
 	console.log(state);
-	state.state = 'waitingForDraw';	
-	state.discardActivity = 1
-	state.deckActivity = 1
-	waitingForDraw(state);
+
+	var request = $.ajax({
+			        url: "/game",
+			        type: 'POST',
+					data: JSON.stringify(state),
+					contentType: "application/json",
+					dataType: 'json'
+			    });
+
+			    // callback handler that will be called on success
+			    request.done(function (response, textStatus, jqXHR){
+			        console.log('Returned from playerChoiceAJAX callback');
+			        // console.log(response);
+
+			        //We're done with HAL's turn, render the players
+			        state = handleState(response);      
+			        renderState(1,state);
+			    });
+
+			    // callback handler that will be called on failure
+			    request.fail(function (jqXHR, textStatus, errorThrown){
+			        // log the error to the console
+			        console.error(
+			            "The following error occured: "+
+			            textStatus, errorThrown,jqXHR
+			        );
+			    });
+
+	//state.state = 'waitingForDraw';	
+	//state.discardActivity = 1
+	//state.deckActivity = 1
+	//waitingForDraw(state);
 	
 
 	return state;
@@ -267,7 +295,7 @@ function playerChoice(state){
 
 	//Add a click pushing function to the opponents cards if we are able to swap:
 	if(state.displayCard.image == '12'){
-		alert('SWAPPING TIME');
+		// alert('SWAPPING TIME');
 		var $oDivs = $('#opponentCards').children('div').each(function(){
 			$(this).addClass('opSwap');
 		});	
@@ -337,10 +365,13 @@ function playerChoice(state){
 		state.playerClicks.push(this.id);
 		pClick = pClick + 1;
 		console.log(pClick);
-		//Use ajax to yell over to the server that something has happened
 
+		//Use ajax to yell over to the server that something has happened
 		//Normal Player Choice
 		if(state.displayCard.image != '12'){
+			// Bring up the loading icon so the user can see we are making progress on their request(this will be closed later in endgame)
+			showLoader();
+			
 		    var request = $.ajax({
 		        url: "/game",
 		        type: 'POST',
@@ -352,6 +383,7 @@ function playerChoice(state){
 		    // callback handler that will be called on success
 		    request.done(function (response, textStatus, jqXHR){
 		        console.log('Returned from playerChoiceAJAX callback');
+		        hideLoader();
 		        // console.log(response);
 
 		        //Remove the click so we don't send a ajax request to the server while this 
@@ -360,11 +392,13 @@ function playerChoice(state){
 		    	$('.playerChoiceAJAX').unbind('click');
 		    	$('.playerChoiceAJAX').removeClass('playerChoiceAJAX');
 		        state = handleState(response);      
+		        //close the loading popup
 		        renderState(1,state);
 		    });
 
 		    // callback handler that will be called on failure
 		    request.fail(function (jqXHR, textStatus, errorThrown){
+		    	hideLoader();
 		        // log the error to the console
 		        console.error(
 		            "The following error occured: "+
@@ -523,6 +557,8 @@ function draw2PlayerChoice(state){
 function endGame(state){
 	//render the board visible
 	renderState(1,state);
+	//close the loading popup
+	hideLoader();
 	//show the dialog popup
 	$('#popupDialog').jqmShow();
 	//call the interaction function, passing in the state.

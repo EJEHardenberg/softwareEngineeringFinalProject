@@ -3,7 +3,10 @@
 # Authors:
 # 	Phelan
 # 	Ethan
-# This handler executes the actual game environment. 
+# This handler executes the actual game environment. The initial gameboard is setup and displayed as a response to an http GET
+#	request. The GameHandler class fills the role of a 'Controller' in the MVC paradigm. It manages game logic and responds to
+#	POST requests from the View (a collection of Javascript and HTML code). In addition to having a method to handle each state,
+#	the GameHander class also possesses several utility functions (including setup, swapping translation, etc...). 
 
 from handler import *
 from random import shuffle
@@ -71,6 +74,10 @@ class GameHandler(Handler):
 			post
 			Responds to post requests for the resource.
 			Takes in the json object from the view and, according to the state, executes the necessary data changes.
+			
+			**** TODO: when an oldState comes in we need to check to see if there are cards left in the deck. if there aren't,
+			we need to direct program flow to endgame. If there are, then we can proceed as normal, according to the information
+			included in the oldState.
 		'''
 		# logging.info(self.request.arguments())
 
@@ -80,13 +87,18 @@ class GameHandler(Handler):
 		# reset all of the active flags in the json (to remove all glowing effects and prepare for new ones)
 		oldState = self.resetActiveFlags(oldState)
 
-		# send the object to the state parser, and get the new state of the gameboard
-		newState = self.parseState(oldState)
+		# if the deck is empty, its time for the endgame state
+		if( len(oldState['deck']) == 0 ):
+			logging.info("Deck is empty")
+			newState = self.endGame(oldState)
+		# otherwise, proceed as normal
+		else:
+			# send the object to the state parser, and get the new state of the gameboard
+			newState = self.parseState(oldState)
 		
 		#write the new data out as a response for the view to render
 		newState = json.dumps(newState)
 
-		# self.HAL(oldState)
 		self.write(newState)
 
 
@@ -97,7 +109,6 @@ class GameHandler(Handler):
 			Returns:
 				initialState, the initial state of the gameboard
 		'''
-		global sessionId
 		# logging.info("This is the session id: "  + sessionId)
 		# make a list of lists of cards, flatten it, pick out a discard card that isnt a power card, then shuffle the deck
 		# numberCards = [ [0]* 4, [1]*4, [2]*4, [3]*4, [4]*4, [5]*4, [6]*4, [7]*4, [8]*4, [9]*9 ]
@@ -106,26 +117,25 @@ class GameHandler(Handler):
 		# shuffle(deck)
 		# subDeck = sum(powerCards, [])
 		# shuffle(subDeck)
-		# discardCard = str(deck.pop(choice(deck)))
+		# discardCard = deck.pop(choice(deck))
 		# for p in subDeck:
 		# 	deck.append(p)
 		# shuffle(deck)
 
-		# smaller deck to test endgame conditions
-		deck = [9,9,9,9,0,0,0,0,0]
-		discardCard = [12]
+		deck = [9,9,9,9,9,9,9,9,9,9]
+		discardCard = 11		
 
 		#intitial JSON array. Note that I've added a playerClicks array to track what the player has selected (eg discard or draw)
 		newState = {"compCard" : [
-						{"image" : str(deck.pop()), 'active' : 0, 'visible' : 0}, 
-						{'image' : str(deck.pop()), 'active' : 0, 'visible' : 0}, 
-						{'image' : str(deck.pop()), 'active' : 0, 'visible' : 0},
-						{'image' : str(deck.pop()), 'active' : 0, 'visible' : 0}],  
+						{"image" : str(deck.pop()), "active" : 0, "visible" : 0}, 
+						{"image" : str(deck.pop()), "active" : 0, "visible" : 0}, 
+						{"image" : str(deck.pop()), "active" : 0, "visible" : 0},
+						{"image" : str(deck.pop()), "active" : 0, "visible" : 0}],  
 					"playCard" : [
-						{'image' : str(deck.pop()), 'active' : 0, 'visible' : 0}, 
-						{'image' : str(deck.pop()), 'active' : 0, 'visible' : 0}, 
-						{'image' : str(deck.pop()), 'active' : 0, 'visible' : 0},
-						{'image' : str(deck.pop()), 'active' : 0, 'visible' : 0}], 
+						{"image" : str(deck.pop()), "active" : 0, "visible" : 0}, 
+						{"image" : str(deck.pop()), "active" : 0, "visible" : 0}, 
+						{"image" : str(deck.pop()), "active" : 0, "visible" : 0},
+						{"image" : str(deck.pop()), "active" : 0, "visible" : 0}], 
 					"discard" : [discardCard],
 					"discardActivity" : 1,
 					"deck" : deck,
@@ -144,7 +154,13 @@ class GameHandler(Handler):
 
 		# encode it
 		# logging.info(newState)
-		# self.ai = HAL.HAL(self.request.get("sessionId"),0,newState['compCard'],newState['playCard'],newState['displayCard'])
+		#TODO
+		#
+		# WE NEED TO CREATE THE AI OBJECT HERE. DO THIS TOMORROW WITH PHELAN
+		#
+		disc = newState['discard'][0]
+		global ai
+		ai = HAL.HAL(pkSessionID=self.sessionId, estAIScore=36,estOppScore=0,opCardsMem=[0.0,0.0,0.0,0.0],aiCardsMem=[1.0,0.0,0.0,1.0],opCards=json.dumps(newState['playCard']),aiCards=json.dumps(newState['compCard']),discardTopValue=int(disc) ,decayRate=0.01)
 
 		return json.dumps(newState)
 
@@ -318,16 +334,22 @@ class GameHandler(Handler):
 		#	The chance of remembering what he has seen is related to the difficulty level he has been set to. This can be done
 		#	in the database, or perhaps just in a variable here, or even in the json. 
 		
-		statePassedIn['state'] = "waitingForDraw"
 		logging.info("Made it to the HAL State")
 		# self.ai.testMe()
 		# newModel = DatastoreInteraction(statePassedIn['sessionId'])
 		# parameterDict = newModel.getHAL()
 		# logging.info(parameterDict)
 
+		#Did the player knock and the counter is down?? 
+		#THIS CODE TO BE MODIFIED ONCE THE CLASS VARIABLE TO MAINTAIN KNOCKING FROM THE AI'S SIDE IS UP
+		ai = HAL.HAL()
+		ai.setupAIObject(statePassedIn['sessionId'])
+		newState = ai.doTurn(statePassedIn)
+
 		#HAL needs to set the activity of the cards for the player to use on their turn before it ends it's
 		statePassedIn['deckActivity'] = 1
 		statePassedIn['discardActivity'] = 1
+		statePassedIn['state'] = "waitingForDraw"
 		logging.info(statePassedIn)
 		return statePassedIn
 
@@ -662,12 +684,28 @@ class GameHandler(Handler):
 		pScore = 0
 		cScore = 0
 
-		# set the cards to visible at this time as well
+		# check to see if the deck has enough cards in it to accomodate swapping all potential power cards
+		# also, remove all power cards, so they cannot be distributed again
+		numberCards = [ [0]* 4, [1]*4, [2]*4, [3]*4, [4]*4, [5]*4, [6]*4, [7]*4, [8]*4, [9]*9 ]
+		cardReplace = sum(numberCards, [])
+		shuffle(cardReplace)
+		
+		# set the cards to visible, get the score, and swap out any power cards
 		for pCard in statePassedIn['playCard']:
-			pScore += int(pCard['image'])
+			cardVal = int(pCard['image'])
+			# if the card is a power card, replace it
+			if(cardVal >= 10):
+				pCard['image'] = cardReplace.pop()
+			# add to running total and set visible
+			pScore += cardVal
 			pCard['visible'] = 1
+
 		for cCard in statePassedIn['compCard']:
-			cScore += int(cCard['image'])
+			cardVal = int(cCard['image'])
+			# if the card is a power card, replace it
+			if(cardVal >= 10):
+				cCard['image'] = cardReplace.pop()
+			cScore += cardVal
 			cCard['visible'] = 1
 
 		logging.info("This is the player score")
